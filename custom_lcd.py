@@ -1,6 +1,8 @@
 import tkinter as tk
 from tkinter import Canvas, PhotoImage
+from typing import Sequence, Tuple
 from xml.dom import minidom
+from svg.path import parse_path, Move, Line
 
 MASK_COLOR = "black"
 
@@ -20,15 +22,16 @@ class Application(tk.Frame):
 
         self.canvas.create_image(0, 0, image=self.background, anchor="nw")
 
-        self.rectangles = self.add_mask_rects_from_svg(mask, init_fill=MASK_COLOR)
+        mask_svg = minidom.parse(mask)
+        self.rectangles = self.add_rects_from_svg(mask_svg, init_fill=MASK_COLOR)
+        self.polygons = self.add_paths_from_svg(mask_svg, init_fill=MASK_COLOR)
 
         self.canvas.bind("<Button-1>", self.click_event)
 
-    def add_mask_rects_from_svg(self, svg_path, init_fill):
+    def add_rects_from_svg(
+        self, svg: minidom.Document, init_fill: str
+    ) -> Sequence[int]:
         """Add each <rect> element from an svg"""
-        # Load the SVG file using minidom
-        svg = minidom.parse(svg_path)
-
         rectangles = []
 
         # Loop through all the <rect> elements in the SVG
@@ -57,6 +60,28 @@ class Application(tk.Frame):
 
         return rectangles
 
+    def add_paths_from_svg(
+        self, svg: minidom.Document, init_fill: str
+    ) -> Sequence[int]:
+        """Add each <path> element from an svg."""
+        paths = [
+            self.canvas.create_polygon(
+                *parse_path_data(
+                    path_data=path.getAttribute("d"),
+                    transform=path.getAttribute("transform"),
+                ),
+                fill=init_fill,
+                outline="",
+                tags=[path.getAttribute("id")],
+            )
+            for path in svg.getElementsByTagName("path")
+        ]
+
+        # Update the image with the current state of the canvas
+        self.canvas.itemconfigure(self.background, image=self.canvas)
+
+        return paths
+
     def click_event(self, event):
         """On click event do stuff."""
         for rectangle in self.rectangles:
@@ -64,15 +89,29 @@ class Application(tk.Frame):
             if x1 <= event.x <= x2 and y1 <= event.y <= y2:
                 print(f"Touch surface {rectangle} was touched!")
                 print(self.canvas.itemcget(rectangle, "tags"))
-                self.toggle_rectangle(rectangle)
+                self.toggle_item(rectangle)
 
-    def toggle_rectangle(self, rectangle):
-        """Hide or show the rectangle using the fill color."""
-        if self.canvas.itemcget(rectangle, "fill") == "":
-            self.canvas.itemconfigure(rectangle, fill=MASK_COLOR)
+    def toggle_item(self, item):
+        """Hide or show the item using the fill color."""
+        if self.canvas.itemcget(item, "fill") == "":
+            self.canvas.itemconfigure(item, fill=MASK_COLOR)
         else:
-            self.canvas.itemconfigure(rectangle, fill="")
+            self.canvas.itemconfigure(item, fill="")
         self.canvas.itemconfigure(self.background, image=self)
+
+
+def parse_path_data(path_data: str, transform: str) -> Sequence[Tuple[int, int]]:
+    """Parse svg path data and get coordinates."""
+    path = parse_path(path_data)
+
+    if transform:
+        raise NotImplementedError("Not implemented (yet)")
+
+    return [
+        (int(segment.end.real), int(segment.end.imag))
+        for segment in path
+        if isinstance(segment, (Move, Line))
+    ]
 
 
 if __name__ == "__main__":
