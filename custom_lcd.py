@@ -14,7 +14,8 @@ I2C_LCD_ADDRESS = 0x32
 
 I2C_TOUCH_READ_CMD = 0x20
 I2C_LCD_READ_CMD = 0x40
-I2C_LCD_WRITE_CMD = 0x41
+I2C_LCD_WRITE_ALL_CMD = 0x41
+I2C_LCD_WRITE_SINGLE_CMD = 0x42
 
 
 class CustomLCD(tk.Frame):
@@ -70,12 +71,15 @@ class CustomLCD(tk.Frame):
         elif message[0] == I2C_LCD_ADDRESS:
             if message[1] == I2C_LCD_READ_CMD:
                 return bytes(self.display_state)
-            if message[1] == I2C_LCD_WRITE_CMD:
+            if message[1] == I2C_LCD_WRITE_SINGLE_CMD:
+                self.redraw_single_mask(message[2], message[3])
+                return bytes((I2C_LCD_ADDRESS, I2C_LCD_WRITE_SINGLE_CMD))
+            if message[1] == I2C_LCD_WRITE_ALL_CMD:
                 old_state = copy.deepcopy(self.display_state)
                 copy_bytes_to_bytearray(self.display_state, message[2:])
                 if old_state != self.display_state:
                     self.redraw_all_masks()
-                return bytes((I2C_LCD_ADDRESS, I2C_LCD_WRITE_CMD))
+                return bytes((I2C_LCD_ADDRESS, I2C_LCD_WRITE_ALL_CMD))
         else:
             return b"Illegal: " + message
 
@@ -150,6 +154,12 @@ class CustomLCD(tk.Frame):
         else:
             self.canvas.itemconfigure(item, fill="")
         self.canvas.itemconfigure(self.background, image=self)
+
+    def redraw_single_mask(self, item_id, state):
+        """Turn on/off single mask element."""
+        with contextlib.suppress(IndexError):
+            self.canvas.itemconfigure(self.masks[item_id], fill="" if state else MASK_COLOR)
+            self.canvas.itemconfigure(self.background, image=self)
 
     def redraw_all_masks(self):
         """Turn on/off mask elements."""
