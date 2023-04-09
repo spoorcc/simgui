@@ -9,13 +9,54 @@ from svg.path import parse_path, Move, Line
 import zmq
 
 MASK_COLOR = "black"
-I2C_TOUCH_ADDRESS = 0x31
+I2C_TOUCH_ADDRESS = 0x30
 I2C_LCD_ADDRESS = 0x32
 
 I2C_TOUCH_READ_CMD = 0x20
+
 I2C_LCD_READ_CMD = 0x40
 I2C_LCD_WRITE_ALL_CMD = 0x41
 I2C_LCD_WRITE_SINGLE_CMD = 0x42
+
+
+class RamMemory:
+    """Block of RAM memory. """
+    def __init__(self, bit_count: int):
+        self._memory = bytearray((bit_count + 7) // 8)
+        self._bit_count = bit_count
+
+    def write_from_bytes(self, data:bytes) -> bool:
+        """Copy bytes to RAM object respecting the size of the bytearray."""
+        old_state = copy.deepcopy(self._memory)
+        copy_length = min(len(data), len(self._memory))
+        self._memory[:copy_length] = data[:copy_length]
+        return old_state != self._memory
+
+    def set_bit(self, idx: int) -> None:
+        """Set single bit of memory."""
+        self._memory[idx // 8] |= 0x80 >> (idx % 8)
+
+    def toggle_bit(self, idx: int) -> None:
+        """Toggle single bit of memory."""
+        self._memory[idx // 8] ^= 0x80 >> (idx % 8)
+
+    def as_bytes(self) -> bytes:
+        """Get entire memory as bytes."""
+        return bytes(self._memory)
+
+    def clear(self) -> None:
+        """Clear all memory to 0."""
+        self._memory = bytearray(len(self._memory))
+
+    def iterate_bits(self) -> Tuple[int, int]:
+        """Iterate over each bit in RAM memory and get each bit index and value."""
+        for byte_index, byte_value in enumerate(self._memory):
+            binary_string = bin(byte_value)[2:].zfill(8)
+            for bit_index, bit_value in enumerate(binary_string):
+                index = byte_index * 8 + bit_index
+                if index >= self._bit_count:
+                    return
+                yield byte_index * 8 + bit_index, int(bit_value)
 
 
 class CustomLCD(tk.Frame):
@@ -41,8 +82,8 @@ class CustomLCD(tk.Frame):
             mask_svg, init_fill=MASK_COLOR
         ) + self.add_paths_from_svg(mask_svg, init_fill=MASK_COLOR)
 
-        self.touch_state = bytearray((len(self.touch_surfaces) + 7) // 8)
-        self.display_state = bytearray((len(self.touch_surfaces) + 7) // 8)
+        self.touch_state = RamMemory(len(self.touch_surfaces))
+        self.display_state = RamMemory(len(self.masks))
 
         self.redraw_all_masks()
 
@@ -65,19 +106,19 @@ class CustomLCD(tk.Frame):
         """Process a received message and reply."""
         if message[0] == I2C_TOUCH_ADDRESS:
             if message[1] == I2C_TOUCH_READ_CMD:
-                reply = bytes(self.touch_state)
-                self.touch_state = bytearray(len(self.touch_state))
+                reply = self.touch_state.as_bytes()
+                self.touch_state.clear()
                 return reply
         elif message[0] == I2C_LCD_ADDRESS:
             if message[1] == I2C_LCD_READ_CMD:
-                return bytes(self.display_state)
+                return self.display_state.as_bytes()
             if message[1] == I2C_LCD_WRITE_SINGLE_CMD:
+                self.display_state.toggle_bit(message[3])
                 self.redraw_single_mask(message[2], message[3])
                 return bytes((I2C_LCD_ADDRESS, I2C_LCD_WRITE_SINGLE_CMD))
             if message[1] == I2C_LCD_WRITE_ALL_CMD:
-                old_state = copy.deepcopy(self.display_state)
-                copy_bytes_to_bytearray(self.display_state, message[2:])
-                if old_state != self.display_state:
+                any_change = self.display_state.write_from_bytes(message[2:])
+                if any_change:
                     self.redraw_all_masks()
                 return bytes((I2C_LCD_ADDRESS, I2C_LCD_WRITE_ALL_CMD))
         else:
@@ -145,7 +186,7 @@ class CustomLCD(tk.Frame):
                 print(f"Touch surface {surface} was touched!")
                 # print(self.canvas.itemcget(surface, "tags"))
                 # self.toggle_item(surface)
-                self.touch_state[idx // 8] |= 0x80 >> (idx % 8)
+                self.touch_state.set_bit(idx)
 
     def toggle_item(self, item):
         """Hide or show the item using the fill color."""
@@ -158,45 +199,17 @@ class CustomLCD(tk.Frame):
     def redraw_single_mask(self, item_id, state):
         """Turn on/off single mask element."""
         with contextlib.suppress(IndexError):
-            self.canvas.itemconfigure(self.masks[item_id], fill="" if state else MASK_COLOR)
+            self.canvas.itemconfigure(
+                self.masks[item_id], fill="" if state else MASK_COLOR
+            )
             self.canvas.itemconfigure(self.background, image=self)
 
     def redraw_all_masks(self):
         """Turn on/off mask elements."""
-        for idx, value in iterate_bits(self.display_state, max_idx=len(self.masks)):
+        for idx, value in self.display_state.iterate_bits():
             self.canvas.itemconfigure(self.masks[idx], fill="" if value else MASK_COLOR)
 
         self.canvas.itemconfigure(self.background, image=self)
-
-
-def copy_bytes_to_bytearray(bytearray_object, bytes_object):
-    """Copy bytes to byte_array object respecting the size of the bytearray."""
-    # Get the length of the bytes object and the bytearray object
-    bytes_length = len(bytes_object)
-    bytearray_length = len(bytearray_object)
-
-    # Compute the number of bytes to copy
-    copy_length = min(bytes_length, bytearray_length)
-
-    # Copy the bytes from the bytes object to the bytearray object
-    bytearray_object[:copy_length] = bytes_object[:copy_length]
-
-    # Pad the remaining bytes in the bytearray object with 0's
-    if bytearray_length > bytes_length:
-        bytearray_object[bytes_length:bytearray_length] = bytearray(
-            bytearray_length - bytes_length
-        )
-
-
-def iterate_bits(b_array: bytearray, max_idx: int) -> Tuple[int, int]:
-    """Iterate over byte array and get each bit index and value."""
-    for byte_index, byte_value in enumerate(b_array):
-        binary_string = bin(byte_value)[2:].zfill(8)
-        for bit_index, bit_value in enumerate(binary_string):
-            index = byte_index * 8 + bit_index
-            if index >= max_idx:
-                return
-            yield byte_index * 8 + bit_index, int(bit_value)
 
 
 def parse_path_data(path_data: str, transform: str) -> Sequence[Tuple[int, int]]:
